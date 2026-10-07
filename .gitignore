@@ -1,68 +1,158 @@
+# ==========================================
+# C / C++
+# ==========================================
 # Prerequisites
 *.d
 
-# Compiled Object files
-*.slo
-*.lo
+# Compiled Object Files
 *.o
+*.ko
 *.obj
+*.elf
 
 # Precompiled Headers
 *.gch
 *.pch
 
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
+# Static & Dynamic Libraries
+*.lib
+*.a
+*.la
+*.lo
+*.def
+*.exp
 *.so
+*.so.*
 *.dylib
 *.dll
-*.so.*
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
 
 # Executables
 *.exe
 *.out
 *.app
+*.i*86
+*.x86_64
+*.hex
 
-# Build directories
+# Build Directories & CMake
 build/
 Build/
-build-*/
-
-# CMake generated files
+bin/
+lib/
+out/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
-Makefile
-install_manifest.txt
+CMakeLists.txt.user
+Makefile.cmake
 compile_commands.json
 
-# Temporary files
-*.tmp
+# ==========================================
+# Python
+# ==========================================
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+env/
+venv/
+ENV/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyTest & Coverage
+.cache
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.noserc
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# ==========================================
+# LaTeX / PDF Compilation
+# ==========================================
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.glg
+*.glo
+*.gls
+*.idx
+*.ilg
+*.ind
+*.ist
+*.lof
 *.log
-*.bak
+*.lot
+*.nav
+*.out
+*.run.xml
+*.snm
+*.synctex.gz
+*.synctex(busy)
+*.toc
+*.vrb
+*_minted-*
+# Ignore compiled PDF files (if generated from LaTeX)
+# Remove the line below if you track source PDFs in repository
+*.pdf
+
+# ==========================================
+# IDEs & Editors
+# ==========================================
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# CLion / JetBrains IDEs
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# Vim / Emacs
+*~
 *.swp
+*.swo
+\#*\#
 
-# vcpkg
-vcpkg_installed/
-
-# debug information files
-*.dwo
-
-# test output & cache
-Testing/
-.cache/
+# ==========================================
+# Operating System Files
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
