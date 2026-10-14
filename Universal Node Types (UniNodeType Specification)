@@ -1,0 +1,39 @@
+. Universal Node Types (UniNodeType Specification)
+Following the 32-byte header, the payload consists of a sequence of cryptographically isolated
+nodes. Each node is prefixed by a 7-byte binary descriptor (<HBI: node_id as uint16, node_type
+as uint8, plaintext_byte_length as uint32), followed by a 12-byte AES-GCM Initialization Vector
+(IV), a 16-byte GCM Authentication Tag, and the encrypted node body.
+The UniHeader and the 7-byte node descriptor are passed as Associated Authenticated Data
+(AAD) into AES-256-GCM, preventing attackers from splicing or reordering encrypted nodes
+across containers.
+Type ID
+Identifier
+Structure & Operational Purpose
+0x01
+NOTARY_ANCHOR
+System Node 0 (Digital Notary): Stores the full 32-byte (256-bit) SHA-256 Merkle Root of all
+payload nodes, the author's 32-byte Ed25519 public key, the 64-byte Ed25519 signature,
+creation timestamp T_0, and the mandatory cooling-off interval \Delta t (in seconds).
+0x02
+SEMANTIC_TENSOR
+Vector Embedding Core: Packed Little-Endian array of IEEE 754 float32 numbers (512D/1024D)
+representing document or state semantics for zero-parsing cosine distance clustering.
+0x03
+KNOWLEDGE_GRAPH
+Structured Knowledge Graph & Deltas: Array of atomic triplets {"s": Subject, "p": Predicate, "o":
+Object, "weight": float, "ego_alignment": float, "solution_link": str, "is_delta_conflict": bool}.
+Preserves conflicting facts in superposition (is_delta_conflict = true) until resolved.
+0x04
+TELEMETRY_MATRIX
+Physical & Medical Telemetry: Compact length-prefixed pipe-delimited metric label header
+followed by a binary IEEE 754 float32 array (used in MZM-Pod vascular/metabolic screening,
+wearables, and autonomous sensors).
+0x05
+BEHAVIOR_CONTRACT
+Dynamic Lifecycle Rules: Declarative parameters defining memory volatility timers (ttl_sec),
+target memory zone (0..3), cryptographic hashes of external heavy media, and semantic UI
+intent tags (e.g., [Weight: Focus]).
+0x06
+GENESIS_TEXT
+Human-Readable Fallback Layer: Clean Markdown/UTF-8 text representation for legacy text
+editors and direct conversion into clinical/legal documents (DICOM, HL7 FHIR, PDF).
