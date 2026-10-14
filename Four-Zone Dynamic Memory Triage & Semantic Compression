@@ -1,0 +1,23 @@
+Four-Zone Dynamic Memory Triage & Semantic Compression
+Host systems managing .uni files segregate storage into four logical and cryptographic memory
+zones:
+Zone 0 — Sovereign Vault (The Black-Box): Strictly local, offline-capable enclave storing root
+keyrings (Primary and Duress seeds), baseline user profile vectors (V_0), and the evolution
+audit log (Delta_Audit_Code). Inaccessible to external networks.
+Zone 1 — Active Stream: Volatile working memory (RAM/SRAM) protected by ephemeral
+session keys (Dead Man's Switch). Upon session timeout or hardware tamper detection (e.g.,
+capacitive security mesh trigger), Zone 1 keys are destroyed or SRAM power is shorted to
+ground (Crowbar Wipe).
+Zone 2 — Semantic Archive (The Graph): Long-term repository of .uni containers.
+Background Semantic Merging: During idle/charging states (Asymmetric Triage), the local AI
+computes the Cosine Distance between SEMANTIC_TENSOR nodes across Zone 2:
+\text{CosineDistance}(\mathbf{A}, \mathbf{B}) = 1 - \frac{\mathbf{A} \cdot
+\mathbf{B}}{\Vert{}\mathbf{A}\Vert{} \Vert{}\mathbf{B}\Vert{}}
+When \text{CosineDistance} < 0.15, candidate files are merged: duplicate triplets in
+KNOWLEDGE_GRAPH are deduplicated, contradictory objects for identical [Subject, Predicate]
+pairs are flagged as is_delta_conflict = True (Superposition), and donor file hashes are recorded
+in the genealogy tree before archiving originals to cold storage.
+Zone 3 — Quarantine (The Honeypot): Isolated sandbox for unverified external files, anomalous
+instantaneous ego-shifts (\Delta t < \text{minutes}), and containers signed with a Duress Key.
+Purged automatically upon session termination.
+—
