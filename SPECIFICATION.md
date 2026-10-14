@@ -1,3 +1,51 @@
+# `.uni` (Universal Neural Interface / Universal Node Identity) Format Specification
+**Version:** 8.0.0 (Universal Reality-Verified Baseline)  
+**Status:** Open Standard Specification & Prior Art Baseline  
+**License:** Uni-Symbiosis Public License v1.0 (USPL-1.0) / CC-BY-4.0  
+
+---
+
+## 1. Architectural Overview & Core Principles
+
+Traditional document and serialization formats (PDF, DOCX, HTML, JSON) are designed for human visual rendering or verbose text parsing, forcing AI systems and edge processors to waste computational resources translating character streams into multidimensional vectors.
+
+The **`.uni`** standard eliminates this bottleneck by operating as a binary-serialized, non-executable semantic and telemetry container engineered for direct tensor operations, granular cryptographic disclosure, and automated cryptographic notarization.
+
+### Fundamental Design Guarantees
+1. **Zero-Parsing Inference:** Native storage of IEEE 754 floating-point embeddings (`float32` tensors) and atomic Knowledge Graph triplets (`[Subject] -> [Predicate] -> [Object]`) enables immediate vector similarity comparison and graph traversal without text parsing.
+2. **Zero-Execution Environment:** The `.uni` container is strictly a passive data structure incapable of housing executable binary opcodes, macros, or arbitrary scripts. Incoming streams are validated at the buffer boundary via strict Type-Length-Value (TLV) schema enforcement (`sterile_ingest`), reducing the code-execution attack surface to zero.
+3. **Dual-Layer Genesis Envelope (Backward Compatibility):** A single `.uni` container simultaneously supports modern AI accelerators (via binary tensor nodes) and legacy systems (via a human-readable Markdown/UTF-8 node or deterministic transcoding into DICOM, HL7 FHIR, and PDF).
+4. **Granular Per-Node Encryption & Selective Disclosure:** Each internal node is encrypted independently using `AES-256-GCM` with keys derived via `RFC 5869 HKDF-SHA256` and bound via a SHA-256 Merkle Tree. The container owner can disclose and mathematically prove the authenticity of a single node (e.g., for a medical specialist or external auditor) via a `Merkle Branch Proof` without exposing any other nodes in the file.
+5. **Cryptographic Notary & Anti-Coercion Layer:** Built-in `Ed25519` digital signatures, a 64-bit microsecond timestamp, a two-phase cooling-off timelock ($\Delta t$), and dual-key steganographic duress detection (`Primary Key` vs. `Duress Key`) replace paper notarization while protecting the human host against coercion and impulsive affect.
+
+---
+
+## 2. Binary Container Topology & 32-Byte $O(1)$ Header (`UniHeader`)
+
+Every `.uni` v8.0 file begins with a fixed **32-byte AVX2-aligned header** encoded in Little-Endian byte order (`<4sHHIIQ4s4s`). Network controllers (SmartNIC/eBPF) and optical data-diode buffers validate this header in $O(1)$ constant time prior to dynamic heap allocation.
+
+```text
++-----------------------------------------------------------------------+
+| 0x00 - 0x03 (4B) | MAGIC_BYTES   : ASCII "UNI8" (0x55 0x4E 0x49 0x38) |
++-----------------------------------------------------------------------+
+| 0x04 - 0x05 (2B) | PROTO_FLAGS   : Version (0x0800) & Mode Bitmask    |
++-----------------------------------------------------------------------+
+| 0x06 - 0x07 (2B) | NODE_BITMAP   : 16-bit Active Node Presence Mask   |
++-----------------------------------------------------------------------+
+| 0x08 - 0x0B (4B) | PAYLOAD_LIMIT : Exact Payload Size in Bytes (uint32)|
++-----------------------------------------------------------------------+
+| 0x0C - 0x0F (4B) | SESSION_SALT  : 32-bit Hardware TRNG Entropy Salt  |
++-----------------------------------------------------------------------+
+| 0x10 - 0x17 (8B) | TIMESTAMP_US  : 64-bit Microsecond Epoch Counter   |
++-----------------------------------------------------------------------+
+| 0x18 - 0x1B (4B) | MERKLE_TAG    : Truncated 32-bit Root Hash Anchor  |
++-----------------------------------------------------------------------+
+| 0x1C - 0x1F (4B) | HEADER_ECC    : 32-bit Blake2s/CRC32 Header Check  |
++-----------------------------------------------------------------------+
+| 0x20 - End       | Encrypted TLV Node Stream + Optional RS(255,223)   |
++-----------------------------------------------------------------------+
+
+
 
 +-----------------------------------------------------------------------+
 |  0x00 - 0x1F  | Chiral Lock Header (32 B) — O(1) Hardware Lock        |
