@@ -1,0 +1,159 @@
+1. SPECIFICATION.md
+# `.uni` (Universal Neural Interface / Universal Node Identity) Format Specification
+**Version:** 8.0.0 (Universal Reality-Verified Baseline)
+**Status:** Open Standard Specification & Prior Art Baseline
+**License:** Uni-Symbiosis Public License v1.0 (USPL-1.0) / CC-BY-4.0
+---
+## 1. Architectural Overview & Core Principles
+Traditional document and serialization formats (PDF, DOCX, HTML, JSON) are designed for
+human visual rendering or verbose text parsing, forcing AI systems and edge processors to
+waste computational resources translating character streams into multidimensional vectors.
+The **`.uni`** standard eliminates this bottleneck by operating as a binary-serialized,
+non-executable semantic and telemetry container engineered for direct tensor operations,
+granular cryptographic disclosure, and automated cryptographic notarization.
+### Fundamental Design Guarantees
+1. **Zero-Parsing Inference:** Native storage of IEEE 754 floating-point embeddings (`float32`
+tensors) and atomic Knowledge Graph triplets (`[Subject] -> [Predicate] -> [Object]`) enables
+immediate vector similarity comparison and graph traversal without text parsing.
+2. **Zero-Execution Environment:** The `.uni` container is strictly a passive data structure
+incapable of housing executable binary opcodes, macros, or arbitrary scripts. Incoming streams
+are validated at the buffer boundary via strict Type-Length-Value (TLV) schema enforcement
+(`sterile_ingest`), reducing the code-execution attack surface to zero.
+3. **Dual-Layer Genesis Envelope (Backward Compatibility):** A single `.uni` container
+simultaneously supports modern AI accelerators (via binary tensor nodes) and legacy systems
+(via a human-readable Markdown/UTF-8 node or deterministic transcoding into DICOM, HL7
+FHIR, and PDF).
+4. **Granular Per-Node Encryption & Selective Disclosure:** Each internal node is encrypted
+independently using `AES-256-GCM` with keys derived via `RFC 5869 HKDF-SHA256` and
+bound via a SHA-256 Merkle Tree. The container owner can disclose and mathematically prove
+the authenticity of a single node (e.g., for a medical specialist or external auditor) via a `Merkle
+Branch Proof` without exposing any other nodes in the file.
+5. **Cryptographic Notary & Anti-Coercion Layer:** Built-in `Ed25519` digital signatures, a 64-bit
+microsecond timestamp, a two-phase cooling-off timelock (t), and dual-key steganographic
+duress detection (`Primary Key` vs. `Duress Key`) replace paper notarization while protecting
+the human host against coercion and impulsive affect.
+---
+## 2. Binary Container Topology & 32-Byte O(1) Header (`UniHeader`) Every `.uni` v8.0 file begins with a fixed **32-byte AVX2-aligned header** encoded in
+Little-Endian byte order (`<4sHHIIQ4s4s`). Network controllers (SmartNIC/eBPF) and optical
+data-diode buffers validate this header in O(1) constant time prior to dynamic heap allocation.
+```text
++-----------------------------------------------------------------------+
+| 0x00 - 0x03 (4B) | MAGIC_BYTES : ASCII "UNI8" (0x55 0x4E 0x49 0x38) |
++-----------------------------------------------------------------------+
+| 0x04 - 0x05 (2B) | PROTO_FLAGS : Version (0x0800) & Mode Bitmask |
++-----------------------------------------------------------------------+
+| 0x06 - 0x07 (2B) | NODE_BITMAP : 16-bit Active Node Presence Mask |
++-----------------------------------------------------------------------+
+| 0x08 - 0x0B (4B) | PAYLOAD_LIMIT : Exact Payload Size in Bytes (uint32)|
++-----------------------------------------------------------------------+
+| 0x0C - 0x0F (4B) | SESSION_SALT : 32-bit Hardware TRNG Entropy Salt |
++-----------------------------------------------------------------------+
+| 0x10 - 0x17 (8B) | TIMESTAMP_US : 64-bit Microsecond Epoch Counter |
++-----------------------------------------------------------------------+
+| 0x18 - 0x1B (4B) | MERKLE_TAG : Truncated 32-bit Root Hash Anchor |
++-----------------------------------------------------------------------+
+| 0x1C - 0x1F (4B) | HEADER_ECC : 32-bit Blake2s/CRC32 Header Check |
++-----------------------------------------------------------------------+
+| 0x20 - End | Encrypted TLV Node Stream + Optional RS(255,223) |
++-----------------------------------------------------------------------+
+Header Field Definitions
+MAGIC_BYTES (4B, char[4]): Constant "UNI8" ("UNIM" in dedicated medical hardware profiles).
+Identifies the stream as a non-executable .uni container.
+PROTO_FLAGS (2B, uint16): Protocol version and hardware integrity status bits (e.g., bit
+0x0001 = Hardware Tamper-Mesh Intact; bit 0x0002 = Reed-Solomon FEC Appended).
+NODE_BITMAP (2B, uint16): Bitmask indicating which node indices (0..15) are populated in the
+payload.
+PAYLOAD_LIMIT (4B, uint32): Exact byte length of the following node stream. Any packet
+whose physical length mismatches PAYLOAD_LIMIT is dropped immediately at the hardware
+boundary, neutralizing buffer-overflow and Payload Denial-of-State (DoS) attacks.
+SESSION_SALT (4B, uint32): Random salt generated per session by a hardware True Random
+Number Generator (TRNG) for HKDF key derivation.
+TIMESTAMP_US (8B, uint64): 64-bit UTC microsecond counter, eliminating the Year-2038
+overflow issue and preventing packet replay attacks.
+MERKLE_TAG (4B, uint8[4]): First 4 bytes of the full 256-bit SHA-256 Merkle root covering all
+nodes.
+HEADER_ECC (4B, uint8[4]): 4-byte Blake2s-32 digest computed over bytes 0x00..0x1B,
+verified in constant time. 3. Universal Node Types (UniNodeType Specification)
+Following the 32-byte header, the payload consists of a sequence of cryptographically isolated
+nodes. Each node is prefixed by a 7-byte binary descriptor (<HBI: node_id as uint16, node_type
+as uint8, plaintext_byte_length as uint32), followed by a 12-byte AES-GCM Initialization Vector
+(IV), a 16-byte GCM Authentication Tag, and the encrypted node body.
+The UniHeader and the 7-byte node descriptor are passed as Associated Authenticated Data
+(AAD) into AES-256-GCM, preventing attackers from splicing or reordering encrypted nodes
+across containers.
+Type ID
+Identifier
+Structure & Operational Purpose
+0x01
+NOTARY_ANCHOR
+System Node 0 (Digital Notary): Stores the full 32-byte (256-bit) SHA-256 Merkle Root of all
+payload nodes, the author's 32-byte Ed25519 public key, the 64-byte Ed25519 signature,
+creation timestamp T_0, and the mandatory cooling-off interval \Delta t (in seconds).
+0x02
+SEMANTIC_TENSOR
+Vector Embedding Core: Packed Little-Endian array of IEEE 754 float32 numbers (512D/1024D)
+representing document or state semantics for zero-parsing cosine distance clustering.
+0x03
+KNOWLEDGE_GRAPH
+Structured Knowledge Graph & Deltas: Array of atomic triplets {"s": Subject, "p": Predicate, "o":
+Object, "weight": float, "ego_alignment": float, "solution_link": str, "is_delta_conflict": bool}.
+Preserves conflicting facts in superposition (is_delta_conflict = true) until resolved.
+0x04
+TELEMETRY_MATRIX
+Physical & Medical Telemetry: Compact length-prefixed pipe-delimited metric label header
+followed by a binary IEEE 754 float32 array (used in MZM-Pod vascular/metabolic screening,
+wearables, and autonomous sensors).
+0x05
+BEHAVIOR_CONTRACT
+Dynamic Lifecycle Rules: Declarative parameters defining memory volatility timers (ttl_sec),
+target memory zone (0..3), cryptographic hashes of external heavy media, and semantic UI
+intent tags (e.g., [Weight: Focus]).
+0x06
+GENESIS_TEXT
+Human-Readable Fallback Layer: Clean Markdown/UTF-8 text representation for legacy text
+editors and direct conversion into clinical/legal documents (DICOM, HL7 FHIR, PDF).
+4. Cryptographic Notary, \Delta t Timelock, and Duress Steganography
+To replace bureaucratic notarization while safeguarding human agency, Node 0
+(NOTARY_ANCHOR) implements three cryptographic mechanisms: Two-Phase Cooling-Off Timelock (\Delta t Validation): For high-stakes legal, financial, or medical
+consents, cooling_off_delta_t_sec specifies a mandatory time gradient \Delta t > 0 (e.g., 43,200
+seconds / 12 hours). Initial signing places the container in
+PENDING_DELTA_T_CONFIRMATION. Finalization requires a second cryptographic signature
+after T_0 + \Delta t, preventing impulsive decisions made under acute emotional affect (\Delta t
+< \text{minutes}).
+Dual-Key Duress Steganography (Primary vs. Duress Ed25519 Keys): The user's sovereign key
+vault (Zone 0) maintains two distinct Ed25519 keypairs: a Primary Keypair (unlocked via normal
+authentication) and a Duress Keypair (unlocked via a coercion PIN/gesture).
+If coerced by an attacker, the user signs with the Duress Key.
+External Indistinguishability: Standard public signature verification checks math validity against
+the signer public key embedded in Node 0 and returns True (VALID). The coercer sees no
+warning flags on screen.
+Silent Quarantine Routing: When the container reaches the user's personal cloud node or a
+trusted syndicate registry that recognizes the Duress Public Key, the node silently routes the
+container into Zone 3 (Quarantine) and invalidates execution.
+Unidirectional Optical Transport & FEC: For air-gapped hardware (such as the MZM-Pod), the
+.uni container is appended with Reed-Solomon RS(255, 223) forward error correction parity
+blocks, enabling 100% single-pass recovery over a unidirectional optical data diode without
+ACK/NACK feedback channels.
+5. Four-Zone Dynamic Memory Triage & Semantic Compression
+Host systems managing .uni files segregate storage into four logical and cryptographic memory
+zones:
+Zone 0 — Sovereign Vault (The Black-Box): Strictly local, offline-capable enclave storing root
+keyrings (Primary and Duress seeds), baseline user profile vectors (V_0), and the evolution
+audit log (Delta_Audit_Code). Inaccessible to external networks.
+Zone 1 — Active Stream: Volatile working memory (RAM/SRAM) protected by ephemeral
+session keys (Dead Man's Switch). Upon session timeout or hardware tamper detection (e.g.,
+capacitive security mesh trigger), Zone 1 keys are destroyed or SRAM power is shorted to
+ground (Crowbar Wipe).
+Zone 2 — Semantic Archive (The Graph): Long-term repository of .uni containers.
+Background Semantic Merging: During idle/charging states (Asymmetric Triage), the local AI
+computes the Cosine Distance between SEMANTIC_TENSOR nodes across Zone 2:
+\text{CosineDistance}(\mathbf{A}, \mathbf{B}) = 1 - \frac{\mathbf{A} \cdot
+\mathbf{B}}{\Vert{}\mathbf{A}\Vert{} \Vert{}\mathbf{B}\Vert{}}
+When \text{CosineDistance} < 0.15, candidate files are merged: duplicate triplets in
+KNOWLEDGE_GRAPH are deduplicated, contradictory objects for identical [Subject, Predicate]
+pairs are flagged as is_delta_conflict = True (Superposition), and donor file hashes are recorded
+in the genealogy tree before archiving originals to cold storage.
+Zone 3 — Quarantine (The Honeypot): Isolated sandbox for unverified external files, anomalous
+instantaneous ego-shifts (\Delta t < \text{minutes}), and containers signed with a Duress Key.
+Purged automatically upon session termination.
+—
