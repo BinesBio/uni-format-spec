@@ -1,0 +1,9 @@
+Header Field Definitions
+​MAGIC_BYTES (4B, char[4]): Constant "UNI8" ("UNIM" in dedicated medical hardware profiles). Identifies the stream as a non-executable .uni container.
+​PROTO_FLAGS (2B, uint16): Protocol version and hardware integrity status bits (e.g., bit 0x0001 = Hardware Tamper-Mesh Intact; bit 0x0002 = Reed-Solomon FEC Appended).
+​NODE_BITMAP (2B, uint16): Bitmask indicating which node indices (0..15) are populated in the payload.
+​PAYLOAD_LIMIT (4B, uint32): Exact byte length of the following node stream. Any packet whose physical length mismatches PAYLOAD_LIMIT is dropped immediately at the hardware boundary, neutralizing buffer-overflow and Payload Denial-of-State (DoS) attacks.
+​SESSION_SALT (4B, uint32): Random salt generated per session by a hardware True Random Number Generator (TRNG) for HKDF key derivation.
+​TIMESTAMP_US (8B, uint64): 64-bit UTC microsecond counter, eliminating the Year-2038 overflow issue and preventing packet replay attacks.
+​MERKLE_TAG (4B, uint8[4]): First 4 bytes of the full 256-bit SHA-256 Merkle root covering all nodes.
+​HEADER_ECC (4B, uint8[4]): 4-byte Blake2s-32 digest computed over bytes 0x00..0x1B, verified in constant time.
