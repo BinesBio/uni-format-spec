@@ -1,0 +1,513 @@
+import struct
+import hashlib
+import hmac
+import json
+import math
+import time
+import os
+from enum import IntEnum
+from typing import Dict, List, Tuple, Optional, Any
+
+# Подключение промышленных криптографических примитивов (при наличии пакета cryptography)
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+    HAS_CRYPTO_LIB = True
+except ImportError:
+    HAS_CRYPTO_LIB = False
+
+
+# =====================================================================
+# 1. ТИПЫ УНИВЕРСАЛЬНЫХ УЗЛОВ И ЗОНЫ ПАМЯТИ (.UNI V 8.0 UNIVERSAL)
+# =====================================================================
+
+class UniNodeType(IntEnum):
+    NOTARY_ANCHOR     = 0x01  # Цифровой нотариат (Ed25519, полный корень Меркла, дельта-таймлок)
+    SEMANTIC_TENSOR   = 0x02  # Векторный эмбеддинг (float32 массив для Zero-Parsing и кластеризации)
+    KNOWLEDGE_GRAPH   = 0x03  # Граф знаний (триплеты Субъект-Предикат-Объект + блок Дельт)
+    TELEMETRY_MATRIX  = 0x04  # Телеметрия датчиков и медицина (MZM-Pod, биометрия)
+    BEHAVIOR_CONTRACT = 0x05  # Смарт-контракт жизни файла (TTL, якоря медиа, теги Хамелеона)
+    GENESIS_TEXT      = 0x06  # Человекочитаемый Markdown/UTF-8 слой обратной совместимости
+
+
+class MemoryZone(IntEnum):
+    ZONE_0_SOVEREIGN_VAULT = 0  # Закрытое ядро владельца (ключи, V_0, журнал эволюции)
+    ZONE_1_ACTIVE_STREAM   = 1  # Оперативный поток (волатильная память с таймером сброса)
+    ZONE_2_SEMANTIC_GRAPH  = 2  # Архив графов и векторов (фоновое сжатие при cosine dist < 0.15)
+    ZONE_3_QUARANTINE      = 3  # Песочница / Карантин (для внешних файлов и тревожных подписей Duress)
+
+
+# =====================================================================
+# 2. КРИПТОГРАФИЧЕСКИЕ ПРИМИТИВЫ (HKDF, AES-256-GCM, ED25519)
+# =====================================================================
+
+def hkdf_sha256(ikm: bytes, salt: bytes, info: bytes, length: int = 32) -> bytes:
+    """Деривация изолированных ключей по стандарту RFC 5869."""
+    prk = hmac.new(salt, ikm, hashlib.sha256).digest()
+    okm, prev = b"", b""
+    for counter in range(1, (length // 32) + 2):
+        prev = hmac.new(prk, prev + info + struct.pack("B", counter), hashlib.sha256).digest()
+        okm += prev
+    return okm[:length]
+
+
+def aead_encrypt(key: bytes, iv: bytes, plaintext: bytes, aad: bytes) -> Tuple[bytes, bytes]:
+    """Аутентифицированное шифрование ноды (AES-256-GCM или резервный контур CTR+HMAC)."""
+    if HAS_CRYPTO_LIB:
+        ct_tag = AESGCM(key).encrypt(iv, plaintext, aad)
+        return ct_tag[:-16], ct_tag[-16:]
+    enc_k = hmac.new(key, b"ENC" + iv, hashlib.sha256).digest()
+    mac_k = hmac.new(key, b"MAC" + iv, hashlib.sha256).digest()
+    ct = bytearray(len(plaintext))
+    for i in range(0, len(plaintext), 32):
+        ks = hashlib.sha256(enc_k + struct.pack("<I", i // 32)).digest()
+        for j, b in enumerate(plaintext[i:i + 32]):
+            ct[i + j] = b ^ ks[j]
+    tag = hmac.new(mac_k, aad + iv + bytes(ct), hashlib.sha256).digest()[:16]
+    return bytes(ct), tag
+
+
+def aead_decrypt(key: bytes, iv: bytes, ciphertext: bytes, tag: bytes, aad: bytes) -> bytes:
+    """Проверка подлинности и расшифровка ноды."""
+    if HAS_CRYPTO_LIB:
+        return AESGCM(key).decrypt(iv, ciphertext + tag, aad)
+    enc_k = hmac.new(key, b"ENC" + iv, hashlib.sha256).digest()
+    mac_k = hmac.new(key, b"MAC" + iv, hashlib.sha256).digest()
+    exp_tag = hmac.new(mac_k, aad + iv + ciphertext, hashlib.sha256).digest()[:16]
+    if not hmac.compare_digest(tag, exp_tag):
+        raise ValueError("CRITICAL: Нарушена целостность ноды или заголовка (AEAD Tag Mismatch)!")
+    pt = bytearray(len(ciphertext))
+    for i in range(0, len(ciphertext), 32):
+        ks = hashlib.sha256(enc_k + struct.pack("<I", i // 32)).digest()
+        for j, b in enumerate(ciphertext[i:i + 32]):
+            pt[i + j] = b ^ ks[j]
+    return bytes(pt)
+
+
+class SovereignKeyring:
+    """
+    Хранилище ключей Зоны 0 владельца:
+    Поддерживает Основной ключ (Primary) и Тревожный ключ под принуждением (Duress Key).
+    Оба ключа создают математически валидную подпись для внешних проверяющих!
+    """
+    def __init__(self, master_seed: bytes):
+        self.master_encryption_secret = hkdf_sha256(master_seed, b"ZONE0_SALT", b"MASTER_ENC_SECRET")
+        self._primary_priv_seed = hkdf_sha256(master_seed, b"ZONE0_SALT", b"ED25519_PRIMARY")
+        self._duress_priv_seed  = hkdf_sha256(master_seed, b"ZONE0_SALT", b"ED25519_DURESS")
+
+        if HAS_CRYPTO_LIB:
+            self._primary_sk = Ed25519PrivateKey.from_private_bytes(self._primary_priv_seed)
+            self._duress_sk  = Ed25519PrivateKey.from_private_bytes(self._duress_priv_seed)
+            self.primary_pubkey = self._primary_sk.public_key().public_bytes_raw()
+            self.duress_pubkey  = self._duress_sk.public_key().public_bytes_raw()
+        else:
+            self.primary_pubkey = hashlib.sha256(b"PUB:" + self._primary_priv_seed).digest()
+            self.duress_pubkey  = hashlib.sha256(b"PUB:" + self._duress_priv_seed).digest()
+
+    def sign_data(self, message: bytes, under_duress: bool = False) -> Tuple[bytes, bytes]:
+        """Возвращает (публичный_ключ_подписанта_32B, подпись_64B)."""
+        if HAS_CRYPTO_LIB:
+            sk = self._duress_sk if under_duress else self._primary_sk
+            pub = self.duress_pubkey if under_duress else self.primary_pubkey
+            return pub, sk.sign(message)
+        else:
+            priv = self._duress_priv_seed if under_duress else self._primary_priv_seed
+            pub = self.duress_pubkey if under_duress else self.primary_pubkey
+            sig_p1 = hmac.new(priv, message, hashlib.sha256).digest()
+            sig_p2 = hashlib.sha256(pub + message + sig_p1).digest()
+            return pub, sig_p1 + sig_p2
+
+    @staticmethod
+    def verify_signature(pubkey: bytes, message: bytes, signature: bytes) -> bool:
+        """Публичная математическая проверка подписи (проходит и для Primary, и для Duress!)."""
+        if len(signature) != 64 or len(pubkey) != 32:
+            return False
+        if HAS_CRYPTO_LIB:
+            try:
+                Ed25519PublicKey.from_public_bytes(pubkey).verify(signature, message)
+                return True
+            except Exception:
+                return False
+        else:
+            exp_p2 = hashlib.sha256(pubkey + message + signature[:32]).digest()
+            return hmac.compare_digest(signature[32:], exp_p2)
+
+
+# =====================================================================
+# 3. БИНАРНАЯ СЕРИАЛИЗАЦИЯ И ВАЛИДАЦИЯ УЗЛОВ (ZERO-EXECUTION TLV)
+# =====================================================================
+
+class UniNodePayload:
+    """Строгий типизированный упаковщик узлов без исполняемого кода."""
+
+    @staticmethod
+    def pack_node(node_type: UniNodeType, data: Any) -> bytes:
+        if node_type == UniNodeType.SEMANTIC_TENSOR:
+            # Прямая бинарная запись массива float32 (Zero-Parsing)
+            floats = [float(x) for x in data]
+            return struct.pack(f"<{len(floats)}f", *floats)
+
+        elif node_type == UniNodeType.KNOWLEDGE_GRAPH:
+            # Валидация структуры триплетов графа знаний и блока Дельт
+            validated_triplets = []
+            for item in data:
+                validated_triplets.append({
+                    "s": str(item["s"]),
+                    "p": str(item["p"]),
+                    "o": str(item["o"]),
+                    "weight": round(float(item.get("weight", 1.0)), 4),
+                    "ego_alignment": round(float(item.get("ego_alignment", 0.0)), 4),
+                    "solution_link": str(item.get("solution_link", "")),
+                    "is_delta_conflict": bool(item.get("is_delta_conflict", False))
+                })
+            return json.dumps(validated_triplets, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+        elif node_type == UniNodeType.TELEMETRY_MATRIX:
+            # Компактная упаковка: список ключей + бинарный буфер IEEE 754 float32
+            keys = list(data.keys())
+            vals = [float(data[k]) for k in keys]
+            keys_header = "|".join(keys).encode("utf-8")
+            return struct.pack("<H", len(keys_header)) + keys_header + struct.pack(f"<{len(vals)}f", *vals)
+
+        elif node_type in (UniNodeType.BEHAVIOR_CONTRACT, UniNodeType.NOTARY_ANCHOR):
+            return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+        elif node_type == UniNodeType.GENESIS_TEXT:
+            return str(data).encode("utf-8")
+
+        raise ValueError(f"Неподдерживаемый тип узла: {node_type}")
+
+    @staticmethod
+    def unpack_node(node_type: UniNodeType, raw_bytes: bytes) -> Any:
+        if node_type == UniNodeType.SEMANTIC_TENSOR:
+            count = len(raw_bytes) // 4
+            return [round(x, 6) for x in struct.unpack(f"<{count}f", raw_bytes)]
+
+        elif node_type in (UniNodeType.KNOWLEDGE_GRAPH, UniNodeType.BEHAVIOR_CONTRACT, UniNodeType.NOTARY_ANCHOR):
+            return json.loads(raw_bytes.decode("utf-8"))
+
+        elif node_type == UniNodeType.TELEMETRY_MATRIX:
+            k_len = struct.unpack("<H", raw_bytes[:2])[0]
+            keys = raw_bytes[2:2 + k_len].decode("utf-8").split("|")
+            floats_buf = raw_bytes[2 + k_len:]
+            vals = struct.unpack(f"<{len(keys)}f", floats_buf)
+            return {k: round(v, 4) for k, v in zip(keys, vals)}
+
+        elif node_type == UniNodeType.GENESIS_TEXT:
+            return raw_bytes.decode("utf-8")
+
+        raise ValueError(f"Неизвестный тип узла при распаковке: {node_type}")
+
+
+# =====================================================================
+# 4. ЯДРО КОНТЕЙНЕРА .UNI (O(1) HEADER, MERKLE TREE, NOTARY, TRIAGE)
+# =====================================================================
+
+class UniUniversalContainer:
+    """
+    Финальная спецификация 32-байтного заголовка UniHeader (Little-Endian '<4sHHIIQ4s4s'):
+      00..03 (4B) MAGIC_BYTES  : b'UNI8' (Универсальный стандарт v8.0)
+      04..05 (2B) PROTO_FLAGS  : Версия и биты режима
+      06..07 (2B) NODE_BITMAP  : Битовая маска присутствующих узлов (до 16 узлов в контейнере)
+      08..11 (4B) PAYLOAD_LIMIT: Точный размер полезной нагрузки в байтах (защита от Payload DoS)
+      12..15 (4B) SESSION_SALT : 32-битная криптографическая соль сеанса
+      16..23 (8B) TIMESTAMP_US : 64-битный счетчик микросекунд (защита от Y2K38 и Replay-атак)
+      24..27 (4B) MERKLE_TAG   : Первые 4 байта корня Меркла для быстрой сверки
+      28..31 (4B) HEADER_ECC   : 4-байтный код целостности заголовка (O(1) аппаратная проверка)
+    """
+    HEADER_FMT = "<4sHHIIQ4s4s"
+    HEADER_SIZE = 32
+    MAGIC = b"UNI8"
+
+    @staticmethod
+    def leaf_hash(node_id: int, node_type: int, raw_bytes: bytes) -> bytes:
+        return hashlib.sha256(b"UNI8_LEAF:" + struct.pack("<HB", node_id, node_type) + raw_bytes).digest()
+
+    @staticmethod
+    def branch_hash(left: bytes, right: bytes) -> bytes:
+        return hashlib.sha256(b"UNI8_BRANCH:" + left + right).digest()
+
+    @classmethod
+    def build_merkle_tree(
+        cls, node_ids: List[int], leaves: List[bytes]
+    ) -> Tuple[bytes, Dict[int, List[Dict[str, str]]]]:
+        """Возвращает полный 32-байтный корень Меркла и ветки доказательств для каждого узла."""
+        if not leaves:
+            return b"\x00" * 32, {}
+        proofs: Dict[int, List[Dict[str, str]]] = {nid: [] for nid in node_ids}
+        positions = {nid: idx for idx, nid in enumerate(node_ids)}
+        level = list(leaves)
+
+        while len(level) > 1:
+            if len(level) % 2 == 1:
+                level.append(level[-1])
+            for nid, pos in positions.items():
+                sib = level[pos + 1] if pos % 2 == 0 else level[pos - 1]
+                side = "right" if pos % 2 == 0 else "left"
+                proofs[nid].append({"side": side, "hash": sib.hex()})
+                positions[nid] = pos // 2
+            level = [cls.branch_hash(level[i], level[i + 1]) for i in range(0, len(level), 2)]
+
+        return level[0], proofs
+
+    @classmethod
+    def verify_header_o1(cls, buffer: bytes) -> bool:
+        """Мгновенная O(1) валидация 32-байтного заголовка и лимита памяти до распаковки."""
+        if len(buffer) < cls.HEADER_SIZE:
+            return False
+        magic, flags, bitmap, payload_limit, salt, ts_us, m_tag, ecc = struct.unpack(
+            cls.HEADER_FMT, buffer[:cls.HEADER_SIZE]
+        )
+        if magic != cls.MAGIC:
+            return False
+        if len(buffer) - cls.HEADER_SIZE != payload_limit:
+            return False  # Аппаратный сброс при несовпадении размера (Payload DoS Drop)
+        expected_ecc = hashlib.blake2s(buffer[:28], digest_size=4).digest()
+        return hmac.compare_digest(ecc, expected_ecc)
+
+    @classmethod
+    def create_container(
+        cls,
+        nodes_input: Dict[int, Tuple[UniNodeType, Any]],
+        keyring: SovereignKeyring,
+        cooling_off_seconds: int = 0,
+        under_duress: bool = False
+    ) -> bytes:
+        """
+        Собирает универсальный контейнер .uni, автоматически формируя Нотариальный Узел (Node 0)
+        с полной 256-битной корневой хеш-суммой Меркла и подписью Ed25519.
+        """
+        if 0 in nodes_input:
+            raise ValueError("Индекс узла 0 зарезервирован под системный узел NOTARY_ANCHOR")
+
+        session_salt = struct.unpack("<I", os.urandom(4))[0]
+        timestamp_us = int(time.time() * 1_000_000)
+
+        # 1. Сериализуем прикладные узлы (1..N) и считаем их хеши для предварительного корня Меркла
+        sorted_user_ids = sorted(nodes_input.keys())
+        packed_nodes: Dict[int, Tuple[UniNodeType, bytes]] = {}
+        user_leaves: List[bytes] = []
+
+        for nid in sorted_user_ids:
+            ntype, content = nodes_input[nid]
+            raw_b = UniNodePayload.pack_node(ntype, content)
+            packed_nodes[nid] = (ntype, raw_b)
+            user_leaves.append(cls.leaf_hash(nid, int(ntype), raw_b))
+
+        data_merkle_root, _ = cls.build_merkle_tree(sorted_user_ids, user_leaves)
+
+        # 2. Формируем системный Узел 0 (NOTARY_ANCHOR) — замена бумажного нотариата
+        notary_payload_to_sign = (
+            data_merkle_root + struct.pack("<QI", timestamp_us, cooling_off_seconds)
+        )
+        signer_pubkey, signature = keyring.sign_data(notary_payload_to_sign, under_duress=under_duress)
+
+        notary_node_dict = {
+            "data_merkle_root_256": data_merkle_root.hex(),
+            "signer_pubkey_ed25519": signer_pubkey.hex(),
+            "signature_ed25519": signature.hex(),
+            "timestamp_us": timestamp_us,
+            "cooling_off_delta_t_sec": cooling_off_seconds,
+            "status": "PENDING_DELTA_T_CONFIRMATION" if cooling_off_seconds > 0 else "FINALIZED"
+        }
+        notary_raw_b = UniNodePayload.pack_node(UniNodeType.NOTARY_ANCHOR, notary_node_dict)
+        packed_nodes[0] = (UniNodeType.NOTARY_ANCHOR, notary_raw_b)
+
+        # 3. Полное дерево Меркла (включая Узел 0)
+        all_ids = [0] + sorted_user_ids
+        all_leaves = [cls.leaf_hash(0, int(UniNodeType.NOTARY_ANCHOR), notary_raw_b)] + user_leaves
+        full_merkle_root, _ = cls.build_merkle_tree(all_ids, all_leaves)
+
+        # 4. Шифрование каждого узла индивидуальным ключом HKDF + AES-256-GCM
+        bitmap = sum(1 << nid for nid in all_ids)
+        salt_bytes = struct.pack("<I", session_salt)
+        encrypted_chunks: List[bytes] = []
+
+        # Временный заголовок без финального размера для расчета AAD
+        for nid in all_ids:
+            ntype, raw_b = packed_nodes[nid]
+            node_desc = struct.pack("<HBI", nid, int(ntype), len(raw_b))  # 7 байт дескриптора
+            iv = hashlib.sha256(salt_bytes + struct.pack("<H", nid) + os.urandom(8)).digest()[:12]
+            node_key = hkdf_sha256(keyring.master_encryption_secret, salt_bytes, f"NODE_{nid}".encode())
+            ct, tag = aead_encrypt(node_key, iv, raw_b, aad=node_desc)
+            encrypted_chunks.append(node_desc + iv + tag + ct)
+
+        payload_blob = b"".join(encrypted_chunks)
+        header_28b = struct.pack(
+            "<4sHHIIQ4s",
+            cls.MAGIC,
+            0x0800,
+            bitmap,
+            len(payload_blob),
+            session_salt,
+            timestamp_us,
+            full_merkle_root[:4]
+        )
+        ecc = hashlib.blake2s(header_28b, digest_size=4).digest()
+        return header_28b + ecc + payload_blob
+
+    @classmethod
+    def inspect_and_route(
+        cls, uni_binary: bytes, keyring: SovereignKeyring
+    ) -> Dict[str, Any]:
+        """
+        Распаковывает контейнер на стороне доверенного узла, проверяет нотариальную подпись
+        и автоматически определяет зону памяти (включая тихий перехват Duress-подписи в Карантин).
+        """
+        if not cls.verify_header_o1(uni_binary):
+            raise ValueError("O(1) Hardware Gate: Заголовок поврежден или нарушен лимит памяти!")
+
+        magic, flags, bitmap, payload_limit, session_salt, ts_us, m_tag, ecc = struct.unpack(
+            cls.HEADER_FMT, uni_binary[:cls.HEADER_SIZE]
+        )
+        salt_bytes = struct.pack("<I", session_salt)
+
+        offset = cls.HEADER_SIZE
+        unpacked_nodes: Dict[int, Dict[str, Any]] = {}
+        all_ids: List[int] = []
+        all_leaves: List[bytes] = []
+
+        while offset < len(uni_binary):
+            node_desc = uni_binary[offset:offset + 7]
+            nid, ntype_int, raw_len = struct.unpack("<HBI", node_desc)
+            iv = uni_binary[offset + 7:offset + 19]
+            tag = uni_binary[offset + 19:offset + 35]
+            ct = uni_binary[offset + 35:offset + 35 + raw_len]
+            offset += 35 + raw_len
+
+            node_key = hkdf_sha256(keyring.master_encryption_secret, salt_bytes, f"NODE_{nid}".encode())
+            raw_b = aead_decrypt(node_key, iv, ct, tag, aad=node_desc)
+            ntype = UniNodeType(ntype_int)
+
+            all_ids.append(nid)
+            all_leaves.append(cls.leaf_hash(nid, ntype_int, raw_b))
+            unpacked_nodes[nid] = {
+                "type": ntype.name,
+                "data": UniNodePayload.unpack_node(ntype, raw_b)
+            }
+
+        # Проверка нотариальной подписи в Узле 0
+        notary = unpacked_nodes[0]["data"]
+        signer_pub = bytes.fromhex(notary["signer_pubkey_ed25519"])
+        signature = bytes.fromhex(notary["signature_ed25519"])
+        data_root = bytes.fromhex(notary["data_merkle_root_256"])
+        delta_t = notary["cooling_off_delta_t_sec"]
+
+        signed_msg = data_root + struct.pack("<QI", notary["timestamp_us"], delta_t)
+        is_sig_valid = SovereignKeyring.verify_signature(signer_pub, signed_msg, signature)
+
+        # Стеганографическая проверка на принуждение (Duress Detection)
+        if hmac.compare_digest(signer_pub, keyring.duress_pubkey):
+            assigned_zone = MemoryZone.ZONE_3_QUARANTINE
+            security_verdict = "SILENT_DURESS_ALARM: Файл подписан под принуждением! Изолирован в Зону 3."
+        elif not is_sig_valid:
+            assigned_zone = MemoryZone.ZONE_3_QUARANTINE
+            security_verdict = "INVALID_SIGNATURE: Подпись недействительна."
+        else:
+            assigned_zone = MemoryZone.ZONE_1_ACTIVE_STREAM
+            security_verdict = "VERIFIED_SOVEREIGN: Подпись подлинна (Primary Key)."
+
+        return {
+            "public_signature_valid": is_sig_valid,  # Внешний проверяющий всегда видит True!
+            "assigned_memory_zone": assigned_zone.name,
+            "internal_security_verdict": security_verdict,
+            "nodes": unpacked_nodes
+        }
+
+
+# =====================================================================
+# 5. АЛГОРИТМ СЕМАНТИЧЕСКОГО ТРИАЖА ЗОНЫ 2 (СЖАТИЕ И СУПЕРПОЗИЦИЯ ДЕЛЬТ)
+# =====================================================================
+
+class Zone2SemanticTriage:
+    """Фоновое сравнение векторов и слияние графов знаний с выделением конфликтов (Дельт)."""
+
+    @staticmethod
+    def cosine_distance(vec_a: List[float], vec_b: List[float]) -> float:
+        dot = sum(a * b for a, b in zip(vec_a, vec_b))
+        norm_a = math.sqrt(sum(a * a for a in vec_a))
+        norm_b = math.sqrt(sum(b * b for b in vec_b))
+        if norm_a == 0 or norm_b == 0:
+            return 1.0
+        return round(1.0 - (dot / (norm_a * norm_b)), 6)
+
+    @classmethod
+    def merge_knowledge_graphs(
+        cls, graph_a: List[Dict[str, Any]], graph_b: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Объединяет два графа знаний: удаляет полные дубли, а при противоречии объектов
+        для одного и того же [Субъект + Предикат] помечает обе записи как Узел Суперпозиции (Delta).
+        """
+        merged: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+        for item in graph_a + graph_b:
+            key = (item["s"], item["p"])
+            merged.setdefault(key, [])
+            if not any(existing["o"] == item["o"] for existing in merged[key]):
+                merged[key].append(dict(item))
+
+        result_graph = []
+        for key, items in merged.items():
+            is_conflict = len(items) > 1
+            for it in items:
+                it["is_delta_conflict"] = is_conflict
+                result_graph.append(it)
+        return result_graph
+
+
+# =====================================================================
+# ДЕМОНСТРАЦИЯ РАБОТЫ ВСЕХ УЗЛОВ .UNI V 8.0 НА ПРАКТИКЕ
+# =====================================================================
+if __name__ == "__main__":
+    keyring = SovereignKeyring(master_seed=b"MY_SOVEREIGN_HARDWARE_SEED_2026")
+
+    # Собираем единый мультимодальный .uni контейнер со всеми типами узлов
+    universal_nodes = {
+        # Узел 1: Векторный эмбеддинг (для мгновенного поиска и кластеризации в Зоне 2)
+        1: (UniNodeType.SEMANTIC_TENSOR, [0.82, 0.14, -0.33, 0.91]),
+
+        # Узел 2: Граф Знаний (с весами эго и ссылками на решения)
+        2: (UniNodeType.KNOWLEDGE_GRAPH, [
+            {"s": "MZM-Pod", "p": "использует_память", "o": "Volatile_SRAM", "weight": 0.99, "ego_alignment": 0.95},
+            {"s": "Клапан_сброса", "p": "срабатывает_при", "o": "1.2_атм", "weight": 0.95, "ego_alignment": 0.90}
+        ]),
+
+        # Узел 3: Медицинская/физическая телеметрия
+        3: (UniNodeType.TELEMETRY_MATRIX, {"carotid_IMT_mm": 0.72, "VAT_SAT_ratio": 0.41, "PWV_ms": 6.8}),
+
+        # Узел 4: Смарт-контракт поведения и теги интерфейса
+        4: (UniNodeType.BEHAVIOR_CONTRACT, {"ttl_sec": 3600, "ui_intent": "[Weight: Focus]", "zone": 1}),
+
+        # Узел 5: Генезис-Оболочка (Markdown-выжимка для старых систем)
+        5: (UniNodeType.GENESIS_TEXT, "# Отчет сессии\nПоказатели сосудов и метаболизма в норме.")
+    }
+
+    # Сценарий А: Штатная подпись с двухфазным замком охлаждения (12 часов = 43200 сек)
+    normal_uni = UniUniversalContainer.create_container(
+        universal_nodes, keyring, cooling_off_seconds=43200, under_duress=False
+    )
+    res_normal = UniUniversalContainer.inspect_and_route(normal_uni, keyring)
+    print(f"[ШТАТНЫЙ КОНТЕЙНЕР .UNI] Размер: {len(normal_uni)} байт")
+    print(f"  Публичная проверка подписи : {res_normal['public_signature_valid']}")
+    print(f"  Маршрутизация памяти       : {res_normal['assigned_memory_zone']}")
+    print(f"  Статус нотариата (Delta-T) : {res_normal['nodes'][0]['data']['status']}\n")
+
+    # Сценарий Б: Подпись под принуждением (Duress Key)
+    duress_uni = UniUniversalContainer.create_container(
+        universal_nodes, keyring, cooling_off_seconds=0, under_duress=True
+    )
+    res_duress = UniUniversalContainer.inspect_and_route(duress_uni, keyring)
+    print("[КОНТЕЙНЕР ПОД ПРИНУЖДЕНИЕМ (DURESS)]")
+    print(f"  Что видит вымогатель (Signature Valid): {res_duress['public_signature_valid']}")
+    print(f"  Что делает Суверенный Узел владельца  : {res_duress['internal_security_verdict']}\n")
+
+    # Сценарий В: Семантическое слияние двух графов в Зоне 2 с обнаружением конфликта (Дельты)
+    dist = Zone2SemanticTriage.cosine_distance([0.82, 0.14, -0.33, 0.91], [0.80, 0.15, -0.31, 0.89])
+    merged_graph = Zone2SemanticTriage.merge_knowledge_graphs(
+        universal_nodes[2][1],
+        [{"s": "Клапан_сброса", "p": "срабатывает_при", "o": "1.5_атм", "weight": 0.80}]
+    )
+    print(f"[ТРИАЖ ЗОНЫ 2] Косинусная дистанция векторов: {dist} (< 0.15 -> Слияние разрешено)")
+    for edge in merged_graph:
+        flag = " [ДЕЛЬТА-КОНФЛИКТ В СУПЕРПОЗИЦИИ]" if edge["is_delta_conflict"] else ""
+        print(f"  Триплет: [{edge['s']}] -> [{edge['p']}] -> [{edge['o']}]{flag}")
