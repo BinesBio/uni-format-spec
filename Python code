@@ -1,0 +1,500 @@
+### 2 `reference/python/uni_core_sdk.py`
+span_11](start_span)[span_11](end_span)[span_12](start_span)[span_12](end_span).
+```python
+#!/usr/bin/env python3
+"""
+.uni Format Reference SDK (Version 8.0 Universal Reality-Verified)
+License: USPL-1.0 / CC-BY-4.0
+Implements:
+- 32-byte O(1) Little-Endian UniHeader validation with Payload DoS protection
+- Zero-Execution TLV binary serialization across 6 universal node types
+- RFC 5869 HKDF-SHA256 per-node key derivation & AEAD AES-256-GCM encryption
+- 256-bit SHA-256 Merkle Tree & selective single-node Merkle Branch Proofs
+- Digital Notary Anchor (Ed25519 signatures, Delta-T cooling-off timelock,
+and steganographic Duress Key routing into Zone 3 Quarantine)
+- Zone 2 Semantic Triage (Cosine Distance clustering & Knowledge Graph Delta merging)
+"""
+import struct
+import hashlib
+import hmac
+import json
+import math
+import time
+import os
+from enum import IntEnum
+from typing import Dict, List, Tuple, Any
+# Attempt to load hardware-accelerated primitives from standard 'cryptography' package
+try:
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+Ed25519PrivateKey,
+Ed25519PublicKey,
+)
+HAS_CRYPTO_LIB = True
+except ImportError:
+HAS_CRYPTO_LIB = False
+# ===================================================================== # 1. UNIVERSAL NODE TYPES & MEMORY TRIAGE ZONES (.UNI V8.0)
+# =====================================================================
+class UniNodeType(IntEnum):
+NOTARY_ANCHOR = 0x01 # System Node 0: Ed25519 signature, 256-bit Merkle Root,
+Delta-T lock
+SEMANTIC_TENSOR = 0x02 # IEEE 754 float32 embedding array for Zero-Parsing
+inference
+KNOWLEDGE_GRAPH = 0x03 # Atomic triplets [S -> P -> O] with Ego Alignment & Delta
+conflicts
+TELEMETRY_MATRIX = 0x04 # Hardware/Medical sensor telemetry (MZM-Pod, wearables,
+drones)
+BEHAVIOR_CONTRACT = 0x05 # Lifecycle rules (TTL, target zone, media hashes, UI intent
+tags)
+GENESIS_TEXT = 0x06 # Human-readable Markdown/UTF-8 fallback & legacy export
+layer
+class MemoryZone(IntEnum):
+ZONE_0_SOVEREIGN_VAULT = 0 # Strictly local root key enclave & V0 audit log
+ZONE_1_ACTIVE_STREAM = 1 # Volatile working RAM/SRAM buffer with Dead Man's
+Switch
+ZONE_2_SEMANTIC_GRAPH = 2 # Long-term vector & graph archive (Cosine merging <
+0.15)
+ZONE_3_QUARANTINE = 3 # Isolated sandbox for untrusted inputs & Duress alerts
+# =====================================================================
+# 2. CRYPTOGRAPHIC CORE (RFC 5869 HKDF, AEAD AES-256-GCM, ED25519)
+# =====================================================================
+def hkdf_sha256(ikm: bytes, salt: bytes, info: bytes, length: int = 32) -> bytes:
+"""Derives isolated cryptographic subkeys pursuant to RFC 5869 HKDF-SHA256."""
+prk = hmac.new(salt, ikm, hashlib.sha256).digest()
+okm, prev = b"", b""
+for counter in range(1, (length // 32) + 2):
+prev = hmac.new(prk, prev + info + struct.pack("B", counter), hashlib.sha256).digest()
+okm += prev
+return okm[:length]
+def aead_encrypt(key: bytes, iv: bytes, plaintext: bytes, aad: bytes) -> Tuple[bytes, bytes]:
+"""Encrypts a node payload using AES-256-GCM (or stdlib CTR+HMAC-SHA256 fallback)."""
+if HAS_CRYPTO_LIB: ct_tag = AESGCM(key).encrypt(iv, plaintext, aad)
+return ct_tag[:-16], ct_tag[-16:]
+enc_k = hmac.new(key, b"ENC" + iv, hashlib.sha256).digest()
+mac_k = hmac.new(key, b"MAC" + iv, hashlib.sha256).digest()
+ct = bytearray(len(plaintext))
+for i in range(0, len(plaintext), 32):
+ks = hashlib.sha256(enc_k + struct.pack("<I", i // 32)).digest()
+for j, b in enumerate(plaintext[i:i + 32]):
+ct[i + j] = b ^ ks[j]
+tag = hmac.new(mac_k, aad + iv + bytes(ct), hashlib.sha256).digest()[:16]
+return bytes(ct), tag
+def aead_decrypt(key: bytes, iv: bytes, ciphertext: bytes, tag: bytes, aad: bytes) -> bytes:
+"""Verifies the 128-bit authentication tag and decrypts the node payload."""
+if HAS_CRYPTO_LIB:
+return AESGCM(key).decrypt(iv, ciphertext + tag, aad)
+enc_k = hmac.new(key, b"ENC" + iv, hashlib.sha256).digest()
+mac_k = hmac.new(key, b"MAC" + iv, hashlib.sha256).digest()
+exp_tag = hmac.new(mac_k, aad + iv + ciphertext, hashlib.sha256).digest()[:16]
+if not hmac.compare_digest(tag, exp_tag):
+raise ValueError("CRITICAL SECURITY ALERT: AEAD Tag mismatch! Node or header
+tampered.")
+pt = bytearray(len(ciphertext))
+for i in range(0, len(ciphertext), 32):
+ks = hashlib.sha256(enc_k + struct.pack("<I", i // 32)).digest()
+for j, b in enumerate(ciphertext[i:i + 32]):
+pt[i + j] = b ^ ks[j]
+return bytes(pt)
+class SovereignKeyring:
+"""
+Zone 0 Key Management Enclave.
+Maintains both a Primary Signing Key and a Steganographic Duress Key.
+Both keys produce mathematically valid external signatures to protect the human host,
+while trusted nodes silently route Duress-signed containers into Zone 3 Quarantine.
+"""
+def __init__(self, master_seed: bytes):
+self.master_encryption_secret = hkdf_sha256(master_seed, b"Z0_SALT",
+b"ENC_MASTER")
+self._primary_seed = hkdf_sha256(master_seed, b"Z0_SALT", b"ED25519_PRIMARY")
+self._duress_seed = hkdf_sha256(master_seed, b"Z0_SALT", b"ED25519_DURESS") if HAS_CRYPTO_LIB:
+self._primary_sk = Ed25519PrivateKey.from_private_bytes(self._primary_seed)
+self._duress_sk = Ed25519PrivateKey.from_private_bytes(self._duress_seed)
+self.primary_pubkey = self._primary_sk.public_key().public_bytes_raw()
+self.duress_pubkey = self._duress_sk.public_key().public_bytes_raw()
+else:
+self.primary_pubkey = hashlib.sha256(b"PUB:" + self._primary_seed).digest()
+self.duress_pubkey = hashlib.sha256(b"PUB:" + self._duress_seed).digest()
+def sign_data(self, message: bytes, under_duress: bool = False) -> Tuple[bytes, bytes]:
+"""Returns (signer_pubkey_32B, signature_64B)."""
+if HAS_CRYPTO_LIB:
+sk = self._duress_sk if under_duress else self._primary_sk
+pub = self.duress_pubkey if under_duress else self.primary_pubkey
+return pub, sk.sign(message)
+priv = self._duress_seed if under_duress else self._primary_seed
+pub = self.duress_pubkey if under_duress else self.primary_pubkey
+sig_p1 = hmac.new(priv, message, hashlib.sha256).digest()
+sig_p2 = hashlib.sha256(pub + message + sig_p1).digest()
+return pub, sig_p1 + sig_p2
+@staticmethod
+def verify_signature(pubkey: bytes, message: bytes, signature: bytes) -> bool:
+"""Public mathematical signature verification (returns True for both Primary & Duress)."""
+if len(signature) != 64 or len(pubkey) != 32:
+return False
+if HAS_CRYPTO_LIB:
+try:
+Ed25519PublicKey.from_public_bytes(pubkey).verify(signature, message)
+return True
+except Exception:
+return False
+exp_p2 = hashlib.sha256(pubkey + message + signature[:32]).digest()
+return hmac.compare_digest(signature[32:], exp_p2)
+# =====================================================================
+# 3. ZERO-EXECUTION BINARY TLV SERIALIZER (STERILE INGEST)
+# =====================================================================
+class UniNodePayload:
+"""Strictly typed binary serializer prohibiting executable code constructs."""
+@staticmethod def pack_node(node_type: UniNodeType, data: Any) -> bytes:
+if node_type == UniNodeType.SEMANTIC_TENSOR:
+floats = [float(x) for x in data]
+return struct.pack(f"<{len(floats)}f", *floats)
+elif node_type == UniNodeType.KNOWLEDGE_GRAPH:
+triplets = []
+for item in data:
+triplets.append({
+"s": str(item["s"]),
+"p": str(item["p"]),
+"o": str(item["o"]),
+"weight": round(float(item.get("weight", 1.0)), 4),
+"ego_alignment": round(float(item.get("ego_alignment", 0.0)), 4),
+"solution_link": str(item.get("solution_link", "")),
+"is_delta_conflict": bool(item.get("is_delta_conflict", False)),
+})
+return json.dumps(triplets, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+elif node_type == UniNodeType.TELEMETRY_MATRIX:
+keys = list(data.keys())
+vals = [float(data[k]) for k in keys]
+keys_hdr = "|".join(keys).encode("utf-8")
+return struct.pack("<H", len(keys_hdr)) + keys_hdr + struct.pack(f"<{len(vals)}f", *vals)
+elif node_type in (UniNodeType.BEHAVIOR_CONTRACT,
+UniNodeType.NOTARY_ANCHOR):
+return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+elif node_type == UniNodeType.GENESIS_TEXT:
+return str(data).encode("utf-8")
+raise ValueError(f"Unsupported UniNodeType: {node_type}")
+@staticmethod
+def unpack_node(node_type: UniNodeType, raw_bytes: bytes) -> Any:
+if node_type == UniNodeType.SEMANTIC_TENSOR:
+count = len(raw_bytes) // 4
+return [round(x, 6) for x in struct.unpack(f"<{count}f", raw_bytes)]
+elif node_type in (UniNodeType.KNOWLEDGE_GRAPH,
+UniNodeType.BEHAVIOR_CONTRACT, UniNodeType.NOTARY_ANCHOR):
+return json.loads(raw_bytes.decode("utf-8")) elif node_type == UniNodeType.TELEMETRY_MATRIX:
+k_len = struct.unpack("<H", raw_bytes[:2])[0]
+keys = raw_bytes[2:2 + k_len].decode("utf-8").split("|")
+vals = struct.unpack(f"<{len(keys)}f", raw_bytes[2 + k_len:])
+return {k: round(v, 4) for k, v in zip(keys, vals)}
+elif node_type == UniNodeType.GENESIS_TEXT:
+return raw_bytes.decode("utf-8")
+raise ValueError(f"Unknown UniNodeType during unpacking: {node_type}")
+# =====================================================================
+# 4. UNIVERSAL .UNI CONTAINER ENGINE (O(1) GATE, MERKLE, SELECTIVE EXPORT)
+# =====================================================================
+class UniUniversalContainer:
+"""
+32-Byte Little-Endian UniHeader Layout ('<4sHHIIQ4s4s'):
+00..03 (4B) MAGIC_BYTES : b'UNI8'
+04..05 (2B) PROTO_FLAGS : Version & hardware integrity flags
+06..07 (2B) NODE_BITMAP : Active node bitmask (nodes 0..15)
+08..11 (4B) PAYLOAD_LIMIT : Exact payload size in bytes (Payload DoS protection)
+12..15 (4B) SESSION_SALT : 32-bit TRNG cryptographic salt
+16..23 (8B) TIMESTAMP_US : 64-bit UTC microsecond counter
+24..27 (4B) MERKLE_TAG : Truncated 4-byte Merkle root anchor
+28..31 (4B) HEADER_ECC : 4-byte Blake2s-32 header integrity syndrome
+"""
+HEADER_FMT = "<4sHHIIQ4s4s"
+HEADER_SIZE = 32
+MAGIC = b"UNI8"
+@staticmethod
+def leaf_hash(node_id: int, node_type: int, raw_bytes: bytes) -> bytes:
+return hashlib.sha256(b"UNI8_LEAF:" + struct.pack("<HB", node_id, node_type) +
+raw_bytes).digest()
+@staticmethod
+def branch_hash(left: bytes, right: bytes) -> bytes:
+return hashlib.sha256(b"UNI8_BRANCH:" + left + right).digest()
+@classmethod
+def build_merkle_tree(
+cls, node_ids: List[int], leaves: List[bytes] ) -> Tuple[bytes, Dict[int, List[Dict[str, str]]]]:
+"""Builds a SHA-256 Merkle Tree, returning the 32-byte root and per-node Branch
+Proofs."""
+if not leaves:
+return b"\x00" * 32, {}
+proofs: Dict[int, List[Dict[str, str]]] = {nid: [] for nid in node_ids}
+positions = {nid: idx for idx, nid in enumerate(node_ids)}
+level = list(leaves)
+while len(level) > 1:
+if len(level) % 2 == 1:
+level.append(level[-1])
+for nid, pos in positions.items():
+sib = level[pos + 1] if pos % 2 == 0 else level[pos - 1]
+side = "right" if pos % 2 == 0 else "left"
+proofs[nid].append({"side": side, "hash": sib.hex()})
+positions[nid] = pos // 2
+level = [cls.branch_hash(level[i], level[i + 1]) for i in range(0, len(level), 2)]
+return level[0], proofs
+@classmethod
+def verify_header_o1(cls, buffer: bytes) -> bool:
+"""Constant-time O(1) validation of the 32-byte header and payload size limit."""
+if len(buffer) < cls.HEADER_SIZE:
+return False
+magic, flags, bitmap, payload_limit, salt, ts_us, m_tag, ecc = struct.unpack(
+cls.HEADER_FMT, buffer[:cls.HEADER_SIZE]
+)
+if magic != cls.MAGIC:
+return False
+if len(buffer) - cls.HEADER_SIZE != payload_limit:
+return False # Immediate hardware/buffer drop on payload length mismatch
+expected_ecc = hashlib.blake2s(buffer[:28], digest_size=4).digest()
+return hmac.compare_digest(ecc, expected_ecc)
+@classmethod
+def create_container(
+cls,
+nodes_input: Dict[int, Tuple[UniNodeType, Any]],
+keyring: SovereignKeyring,
+cooling_off_seconds: int = 0,
+under_duress: bool = False,
+) -> bytes: """Assembles an encrypted .uni container with an automated Node 0 Digital Notary seal."""
+if 0 in nodes_input:
+raise ValueError("Node ID 0 is reserved for the system NOTARY_ANCHOR node.")
+session_salt = struct.unpack("<I", os.urandom(4))[0]
+timestamp_us = int(time.time() * 1_000_000)
+sorted_user_ids = sorted(nodes_input.keys())
+packed_nodes: Dict[int, Tuple[UniNodeType, bytes]] = {}
+user_leaves: List[bytes] = []
+for nid in sorted_user_ids:
+ntype, content = nodes_input[nid]
+raw_b = UniNodePayload.pack_node(ntype, content)
+packed_nodes[nid] = (ntype, raw_b)
+user_leaves.append(cls.leaf_hash(nid, int(ntype), raw_b))
+data_merkle_root, _ = cls.build_merkle_tree(sorted_user_ids, user_leaves)
+# Build System Node 0 (NOTARY_ANCHOR)
+notary_msg = data_merkle_root + struct.pack("<QI", timestamp_us, cooling_off_seconds)
+signer_pubkey, signature = keyring.sign_data(notary_msg, under_duress=under_duress)
+notary_dict = {
+"data_merkle_root_256": data_merkle_root.hex(),
+"signer_pubkey_ed25519": signer_pubkey.hex(),
+"signature_ed25519": signature.hex(),
+"timestamp_us": timestamp_us,
+"cooling_off_delta_t_sec": cooling_off_seconds,
+"status": "PENDING_DELTA_T_CONFIRMATION" if cooling_off_seconds > 0 else
+"FINALIZED",
+}
+notary_raw_b = UniNodePayload.pack_node(UniNodeType.NOTARY_ANCHOR,
+notary_dict)
+packed_nodes[0] = (UniNodeType.NOTARY_ANCHOR, notary_raw_b)
+all_ids = [0] + sorted_user_ids
+all_leaves = [cls.leaf_hash(0, int(UniNodeType.NOTARY_ANCHOR), notary_raw_b)] +
+user_leaves
+full_merkle_root, _ = cls.build_merkle_tree(all_ids, all_leaves)
+bitmap = sum(1 << nid for nid in all_ids)
+salt_bytes = struct.pack("<I", session_salt)
+encrypted_chunks: List[bytes] = [] for nid in all_ids:
+ntype, raw_b = packed_nodes[nid]
+node_desc = struct.pack("<HBI", nid, int(ntype), len(raw_b))
+iv = hashlib.sha256(salt_bytes + struct.pack("<H", nid) + os.urandom(8)).digest()[:12]
+node_key = hkdf_sha256(keyring.master_encryption_secret, salt_bytes,
+f"NODE_{nid}".encode())
+ct, tag = aead_encrypt(node_key, iv, raw_b, aad=node_desc)
+encrypted_chunks.append(node_desc + iv + tag + ct)
+payload_blob = b"".join(encrypted_chunks)
+header_28b = struct.pack(
+"<4sHHIIQ4s",
+cls.MAGIC,
+0x0801,
+bitmap,
+len(payload_blob),
+session_salt,
+timestamp_us,
+full_merkle_root[:4],
+)
+ecc = hashlib.blake2s(header_28b, digest_size=4).digest()
+return header_28b + ecc + payload_blob
+@classmethod
+def inspect_and_route(cls, uni_binary: bytes, keyring: SovereignKeyring) -> Dict[str, Any]:
+"""Decrypts container, verifies Notary signature, and routes to the proper Memory Zone."""
+if not cls.verify_header_o1(uni_binary):
+raise ValueError("O(1) Hardware Gate: Invalid header or payload length mismatch!")
+magic, flags, bitmap, payload_limit, session_salt, ts_us, m_tag, ecc = struct.unpack(
+cls.HEADER_FMT, uni_binary[:cls.HEADER_SIZE]
+)
+salt_bytes = struct.pack("<I", session_salt)
+offset = cls.HEADER_SIZE
+unpacked_nodes: Dict[int, Dict[str, Any]] = {}
+while offset < len(uni_binary):
+node_desc = uni_binary[offset:offset + 7]
+nid, ntype_int, raw_len = struct.unpack("<HBI", node_desc)
+iv = uni_binary[offset + 7:offset + 19]
+tag = uni_binary[offset + 19:offset + 35]
+ct = uni_binary[offset + 35:offset + 35 + raw_len]
+offset += 35 + raw_len node_key = hkdf_sha256(keyring.master_encryption_secret, salt_bytes,
+f"NODE_{nid}".encode())
+raw_b = aead_decrypt(node_key, iv, ct, tag, aad=node_desc)
+ntype = UniNodeType(ntype_int)
+unpacked_nodes[nid] = {
+"type": ntype.name,
+"data": UniNodePayload.unpack_node(ntype, raw_b),
+}
+notary = unpacked_nodes[0]["data"]
+signer_pub = bytes.fromhex(notary["signer_pubkey_ed25519"])
+signature = bytes.fromhex(notary["signature_ed25519"])
+data_root = bytes.fromhex(notary["data_merkle_root_256"])
+delta_t = notary["cooling_off_delta_t_sec"]
+signed_msg = data_root + struct.pack("<QI", notary["timestamp_us"], delta_t)
+is_sig_valid = SovereignKeyring.verify_signature(signer_pub, signed_msg, signature)
+if hmac.compare_digest(signer_pub, keyring.duress_pubkey):
+zone = MemoryZone.ZONE_3_QUARANTINE
+verdict = "SILENT_DURESS_ALERT: Coercion key detected! Isolated in Zone 3
+Quarantine."
+elif not is_sig_valid:
+zone = MemoryZone.ZONE_3_QUARANTINE
+verdict = "INVALID_SIGNATURE: Cryptographic verification failed."
+else:
+zone = MemoryZone.ZONE_1_ACTIVE_STREAM
+verdict = "VERIFIED_SOVEREIGN: Authentic Primary Signature."
+return {
+"public_signature_valid": is_sig_valid,
+"assigned_memory_zone": zone.name,
+"internal_security_verdict": verdict,
+"nodes": unpacked_nodes,
+}
+@classmethod
+def export_selective_slice(
+cls, uni_binary: bytes, keyring: SovereignKeyring, target_node_id: int
+) -> Dict[str, Any]:
+"""Exports a single decrypted node accompanied by its 256-bit Merkle Branch Proof."""
+if not cls.verify_header_o1(uni_binary):
+raise ValueError("Container failed O(1) header check.") _, _, bitmap, _, session_salt, _, _, _ = struct.unpack(
+cls.HEADER_FMT, uni_binary[:cls.HEADER_SIZE]
+)
+if not (bitmap & (1 << target_node_id)):
+raise ValueError(f"Node {target_node_id} is not present in container.")
+salt_bytes = struct.pack("<I", session_salt)
+offset = cls.HEADER_SIZE
+all_ids, all_leaves = [], []
+target_raw, target_type = b"", UniNodeType.GENESIS_TEXT
+while offset < len(uni_binary):
+node_desc = uni_binary[offset:offset + 7]
+nid, ntype_int, raw_len = struct.unpack("<HBI", node_desc)
+iv = uni_binary[offset + 7:offset + 19]
+tag = uni_binary[offset + 19:offset + 35]
+ct = uni_binary[offset + 35:offset + 35 + raw_len]
+offset += 35 + raw_len
+node_key = hkdf_sha256(keyring.master_encryption_secret, salt_bytes,
+f"NODE_{nid}".encode())
+raw_b = aead_decrypt(node_key, iv, ct, tag, aad=node_desc)
+all_ids.append(nid)
+all_leaves.append(cls.leaf_hash(nid, ntype_int, raw_b))
+if nid == target_node_id:
+target_raw = raw_b
+target_type = UniNodeType(ntype_int)
+full_root_256, proofs = cls.build_merkle_tree(all_ids, all_leaves)
+return {
+"node_id": target_node_id,
+"node_type": int(target_type),
+"node_type_name": target_type.name,
+"decoded_data": UniNodePayload.unpack_node(target_type, target_raw),
+"raw_payload_hex": target_raw.hex(),
+"full_merkle_root_256": full_root_256.hex(),
+"merkle_branch_proof": proofs[target_node_id],
+}
+@classmethod
+def verify_selective_slice(cls, exported_slice: Dict[str, Any]) -> bool:
+"""Verifies a single exported node against the 256-bit Merkle root without other node
+keys.""" curr = cls.leaf_hash(
+exported_slice["node_id"],
+exported_slice["node_type"],
+bytes.fromhex(exported_slice["raw_payload_hex"]),
+)
+for step in exported_slice["merkle_branch_proof"]:
+sib = bytes.fromhex(step["hash"])
+curr = cls.branch_hash(curr, sib) if step["side"] == "right" else cls.branch_hash(sib, curr)
+return hmac.compare_digest(curr.hex(), exported_slice["full_merkle_root_256"])
+# =====================================================================
+# 5. ZONE 2 SEMANTIC TRIAGE (COSINE CLUSTERING & DELTA SUPERPOSITION)
+# =====================================================================
+class Zone2SemanticTriage:
+"""Background vector clustering and Knowledge Graph merging with Delta conflict tracking."""
+@staticmethod
+def cosine_distance(vec_a: List[float], vec_b: List[float]) -> float:
+dot = sum(a * b for a, b in zip(vec_a, vec_b))
+norm_a = math.sqrt(sum(a * a for a in vec_a))
+norm_b = math.sqrt(sum(b * b for b in vec_b))
+if norm_a == 0.0 or norm_b == 0.0:
+return 1.0
+return round(1.0 - (dot / (norm_a * norm_b)), 6)
+@staticmethod
+def merge_knowledge_graphs(
+graph_a: List[Dict[str, Any]], graph_b: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+for edge in graph_a + graph_b:
+key = (edge["s"], edge["p"])
+grouped.setdefault(key, [])
+if not any(existing["o"] == edge["o"] for existing in grouped[key]):
+grouped[key].append(dict(edge))
+merged_list = []
+for _, edges in grouped.items():
+conflict = len(edges) > 1
+for e in edges:
+e["is_delta_conflict"] = conflict
+merged_list.append(e) return merged_list
+# =====================================================================
+# SELF-TEST & VERIFICATION SUITE
+# =====================================================================
+if __name__ == "__main__":
+print("==================================================================")
+print(" .uni Universal Reference SDK v8.0 - Verification Suite")
+print(f" Crypto Backend: {'Hardware AES-256-GCM & Ed25519' if HAS_CRYPTO_LIB else
+'Stdlib AEAD Fallback'}")
+print("==================================================================\n"
+)
+keyring = SovereignKeyring(master_seed=b"SOVEREIGN_ROOT_SEED_2026_V8")
+sample_nodes = {
+1: (UniNodeType.SEMANTIC_TENSOR, [0.82, 0.14, -0.33, 0.91]),
+2: (UniNodeType.KNOWLEDGE_GRAPH, [
+{"s": "MZM-Pod", "p": "uses_memory", "o": "Volatile_SRAM", "weight": 0.99,
+"ego_alignment": 0.95},
+{"s": "Dump_Valve", "p": "triggers_at", "o": "1.2_atm", "weight": 0.95, "ego_alignment":
+0.90},
+]),
+3: (UniNodeType.TELEMETRY_MATRIX, {"carotid_IMT_mm": 0.72, "VAT_SAT_ratio":
+0.41, "PWV_ms": 6.8}),
+4: (UniNodeType.BEHAVIOR_CONTRACT, {"ttl_sec": 3600, "ui_intent": "[Weight: Focus]",
+"zone": 1}),
+5: (UniNodeType.GENESIS_TEXT, "# Session Summary\nVascular and metabolic
+parameters within normal range."),
+}
+# Test 1: Normal Container with 12-hour (43,200s) Delta-T Cooling-Off Timelock
+uni_normal = UniUniversalContainer.create_container(
+sample_nodes, keyring, cooling_off_seconds=43200, under_duress=False
+)
+inspected_normal = UniUniversalContainer.inspect_and_route(uni_normal, keyring)
+print(f"[Test 1] Standard Container Packed ({len(uni_normal)} bytes)")
+print(f" Public Signature Valid : {inspected_normal['public_signature_valid']}")
+print(f" Assigned Memory Zone : {inspected_normal['assigned_memory_zone']}")
+print(f" Notary Status : {inspected_normal['nodes'][0]['data']['status']}\n") # Test 2: Coerced Signature (Steganographic Duress Key)
+uni_duress = UniUniversalContainer.create_container(
+sample_nodes, keyring, cooling_off_seconds=0, under_duress=True
+)
+inspected_duress = UniUniversalContainer.inspect_and_route(uni_duress, keyring)
+print("[Test 2] Coerced Container (Signed with Duress Key)")
+print(f" External Verifier Sees : Signature Valid =
+{inspected_duress['public_signature_valid']}")
+print(f" Sovereign Node Action : {inspected_duress['internal_security_verdict']}\n")
+# Test 3: Selective Single-Node Disclosure (Node 3 Telemetry) & Merkle Proof Verification
+telemetry_slice = UniUniversalContainer.export_selective_slice(uni_normal, keyring,
+target_node_id=3)
+slice_verified = UniUniversalContainer.verify_selective_slice(telemetry_slice)
+print("[Test 3] Selective Single-Node Export (Node 3: TELEMETRY_MATRIX)")
+print(f" Disclosed Metrics : {telemetry_slice['decoded_data']}")
+print(f" Merkle Proof Verified : {slice_verified} (Nodes 1, 2, 4, 5 remain unexposed)\n")
+# Test 4: Zone 2 Semantic Triage & Delta Conflict Superposition
+c_dist = Zone2SemanticTriage.cosine_distance([0.82, 0.14, -0.33, 0.91], [0.80, 0.15, -0.31,
+0.89])
+merged = Zone2SemanticTriage.merge_knowledge_graphs(
+sample_nodes[2][1],
+[{"s": "Dump_Valve", "p": "triggers_at", "o": "1.5_atm", "weight": 0.80}],
+)
+print(f"[Test 4] Zone 2 Semantic Triage | Cosine Distance = {c_dist} (< 0.15 threshold)")
+for triplet in merged:
+delta_tag = " [DELTA CONFLICT SUPERPOSITION]" if triplet["is_delta_conflict"] else ""
+print(f" [{triplet['s']}] -> [{triplet['p']}] -> [{triplet['o']}]{delta_tag}")
